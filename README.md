@@ -6,7 +6,7 @@ Frame-exact, high-resolution recording for [p5.js](https://p5js.org) sketches (g
 - **H.264 MP4**, made in the browser right away (`-web.mp4`)
 - **High-quality MP4 + ProRes 422 HQ `.mov`**, made by a terminal helper using your local ffmpeg
 
-Recording is frame-exact: a slow or high-res sketch still plays back at the set fps, with no dropped frames. Built on [p5.capture](https://github.com/tapioca24/p5.capture).
+Recording is frame-exact: a slow or high-res sketch still plays back at the set fps, with no dropped frames. Built on [p5.capture](https://github.com/tapioca24/p5.capture), [mp4-muxer](https://github.com/Vanilagy/mp4-muxer) and [FFmpeg](https://ffmpeg.org); see [Credits](#credits).
 
 ## Quick start (no download)
 
@@ -67,6 +67,24 @@ Programmatic control: `Recorder.start()`, `Recorder.stop()`, `Recorder.toggle()`
 - ProRes is only made by the helper, because browsers can't encode it.
 - p5.js 1.x, global mode. Serve the page over `http://` (e.g. `npx serve` or VS Code Live Server), not `file://`.
 
+## Credits
+
+This project is a thin layer on top of excellent open-source work:
+
+| Library | Author | Used for | License |
+| --- | --- | --- | --- |
+| [p5.js](https://p5js.org) ([GitHub](https://github.com/processing/p5.js)) | Processing Foundation & contributors | the sketch runtime | LGPL-2.1 |
+| [p5.capture](https://github.com/tapioca24/p5.capture) | [tapioca24](https://github.com/tapioca24) | frame-exact capture of the p5 canvas, PNG/JPG/WebP zips | MIT |
+| [mp4-muxer](https://github.com/Vanilagy/mp4-muxer) | [Vanilagy](https://github.com/Vanilagy) | packaging browser-encoded H.264 into an MP4 file | MIT |
+| [WebCodecs API](https://developer.mozilla.org/docs/Web/API/WebCodecs_API) | W3C / browser vendors | hardware H.264 encoding in the browser | web standard |
+| [FFmpeg](https://ffmpeg.org) with [x264](https://www.videolan.org/developers/x264.html) | FFmpeg & VideoLAN developers | final H.264 and ProRes renders (helper script) | LGPL / GPL |
+| [Node.js](https://nodejs.org) | OpenJS Foundation | running the helper script | MIT |
+| [jsDelivr](https://www.jsdelivr.com) | jsDelivr | serving the scripts from a CDN | free public CDN |
+
+p5.capture itself builds on [webm-writer-js](https://github.com/thenickdude/webm-writer-js), [gif.js](https://github.com/jnordberg/gif.js) and [h264-mp4-encoder](https://github.com/TrevorSundberg/h264-mp4-encoder) for its other export formats.
+
+None of these are bundled here; they're loaded from their CDNs or installed on your machine, under their own licenses.
+
 ## License
 
-MIT
+MIT for the code in this repository (`p5.recorder.js`, `render-recordings.mjs`, `example/`).
