@@ -33,11 +33,17 @@ jobs:
         uses: actions/checkout@v4
       - name: Setup Pages
         uses: actions/configure-pages@v5
+      # The example loads ../p5.recorder.js, which lives outside example/, so bundle both into _site
+      - name: Build site
+        run: |
+          mkdir -p _site
+          cp -r example/. _site/
+          cp p5.recorder.js _site/
+          sed -i 's#\.\./p5\.recorder\.js#p5.recorder.js#' _site/index.html
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          # Upload entire repository > example
-          path: './example'
+          path: './_site'
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v5

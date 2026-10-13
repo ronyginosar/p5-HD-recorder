@@ -5,3 +5,4 @@ node_modules/
 *.mp4
 *.mov
 *.recording.json
+.vscode/
