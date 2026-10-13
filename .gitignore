@@ -1,0 +1,7 @@
+.DS_Store
+node_modules/
+*-frames/
+*.zip
+*.mp4
+*.mov
+*.recording.json

@@ -1,0 +1,231 @@
+#!/usr/bin/env node
+/**
+ * render-recordings.mjs — companion to p5.recorder.js.
+ * Part of p5-HD-recorder: https://github.com/ronyginosar/p5-HD-recorder (MIT)
+ * Watches a downloads folder; when a recording's manifest (<session>.recording.json) and all of its
+ * PNG zip parts have arrived, unzips the frames and renders them with the local ffmpeg into:
+ *   <session>.mp4         H.264, yuv420p — small, plays everywhere / Instagram
+ *   <session>-prores.mov  ProRes 422 HQ, 10-bit — for editing
+ * Outputs land next to the zips. Requires ffmpeg + unzip on PATH (both standard on macOS w/ ffmpeg installed).
+ *
+ * Usage:
+ *   node render-recordings.mjs                     # watch ~/Downloads until Ctrl+C
+ *   node render-recordings.mjs --once              # render whatever is complete now, then exit
+ *   node render-recordings.mjs --dir ~/Desktop/rec --codecs h264 --keep-frames
+ */
+
+import { spawn } from "node:child_process";
+import { promises as fs } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
+// ─── Tuneable parameters ──────────────────────────────────────────────────────
+const DEFAULT_WATCH_DIR = path.join(os.homedir(), "Downloads");
+const DEFAULT_CODECS = ["h264", "prores"];   // which outputs to render
+const POLL_INTERVAL_MS = 2000;               // how often to rescan the folder
+const STALL_TIMEOUT_MS = 60000;              // render anyway if frames are missing and no new part arrived for this long
+const KEEP_EXTRACTED_FRAMES = false;         // keep <session>-frames/ after rendering
+const H264_CRF = 16;                         // lower = better quality / bigger file (18 ≈ visually lossless)
+const H264_PRESET = "slow";                  // slower = smaller file at the same quality
+const PRORES_PROFILE = 3;                    // 0 proxy, 1 LT, 2 standard, 3 HQ, 4 4444
+const MANIFEST_SUFFIX = ".recording.json";
+// ──────────────────────────────────────────────────────────────────────────────
+
+/** ffmpeg output definitions; each gets the shared image-sequence input. */
+const CODEC_OUTPUTS = {
+  h264: {
+    filenameSuffix: ".mp4",
+    args: ["-c:v", "libx264", "-crf", String(H264_CRF), "-preset", H264_PRESET,
+      "-pix_fmt", "yuv420p", "-movflags", "+faststart"],
+  },
+  prores: {
+    filenameSuffix: "-prores.mov",
+    args: ["-c:v", "prores_ks", "-profile:v", String(PRORES_PROFILE),
+      "-pix_fmt", "yuv422p10le", "-vendor", "apl0"],
+  },
+};
+
+/** Parses --dir, --codecs, --once, --keep-frames. */
+const parseArguments = (argv) => {
+  const options = { watchDir: DEFAULT_WATCH_DIR, codecs: DEFAULT_CODECS, isOnce: false, shouldKeepFrames: KEEP_EXTRACTED_FRAMES };
+  for (let index = 0; index < argv.length; index++) {
+    const argument = argv[index];
+    if (argument === "--once") options.isOnce = true;
+    else if (argument === "--keep-frames") options.shouldKeepFrames = true;
+    else if (argument === "--dir") options.watchDir = path.resolve(argv[++index].replace(/^~(?=$|\/)/, os.homedir()));
+    else if (argument === "--codecs") options.codecs = argv[++index].split(",").map((codec) => codec.trim());
+    else throw new Error(`unknown argument: ${argument}`);
+  }
+  const unknownCodecs = options.codecs.filter((codec) => !CODEC_OUTPUTS[codec]);
+  if (unknownCodecs.length) throw new Error(`unknown codec(s): ${unknownCodecs.join(", ")} — use h264,prores`);
+  return options;
+};
+
+/** Runs a command; resolves with stdout, rejects with stderr on non-zero exit. */
+const runCommand = (command, args, { shouldInheritOutput = false } = {}) =>
+  new Promise((resolve, reject) => {
+    const child = spawn(command, args, { stdio: shouldInheritOutput ? ["ignore", "inherit", "inherit"] : "pipe" });
+    let stdout = "";
+    let stderr = "";
+    child.stdout?.on("data", (data) => (stdout += data));
+    child.stderr?.on("data", (data) => (stderr += data));
+    child.on("error", reject);
+    child.on("close", (exitCode) =>
+      exitCode === 0 ? resolve(stdout) : reject(new Error(`${command} exited ${exitCode}\n${stderr}`)));
+  });
+
+const fileExists = (filePath) => fs.access(filePath).then(() => true, () => false);
+
+const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+// zip → image count, keyed by name+size so finished downloads are only listed once
+const zipImageCountCache = new Map();
+
+/** Counts image entries inside a zip without extracting it. */
+const countImagesInZip = async (zipPath, imageExtension) => {
+  const { size } = await fs.stat(zipPath);
+  const cacheKey = `${zipPath}:${size}`;
+  if (zipImageCountCache.has(cacheKey)) return zipImageCountCache.get(cacheKey);
+  const listing = await runCommand("unzip", ["-Z1", zipPath]);
+  const imageCount = listing.split("\n").filter((entry) => entry.endsWith(`.${imageExtension}`)).length;
+  zipImageCountCache.set(cacheKey, imageCount);
+  return imageCount;
+};
+
+/** Finds <session>-partNNN.zip files (fully downloaded ones only — browsers use temp names while writing). */
+const findSessionParts = (fileNames, sessionName) => {
+  const partPattern = new RegExp(`^${escapeRegExp(sessionName)}-part\\d+\\.zip$`);
+  return fileNames.filter((fileName) => partPattern.test(fileName)).sort();
+};
+
+/** Extracts every part flat into one folder; frame names are already numbered continuously across parts. */
+const extractFrames = async (watchDir, partNames, framesDir) => {
+  await fs.rm(framesDir, { recursive: true, force: true });
+  await fs.mkdir(framesDir, { recursive: true });
+  for (const partName of partNames) {
+    await runCommand("unzip", ["-q", "-o", "-j", path.join(watchDir, partName), "-d", framesDir]);
+  }
+};
+
+/** Detects the first frame index + digit padding from the extracted filenames (p5.capture: 0000000.png). */
+const detectFramePattern = async (framesDir, imageExtension) => {
+  const imageNames = (await fs.readdir(framesDir)).filter((name) => name.endsWith(`.${imageExtension}`)).sort();
+  if (!imageNames.length) throw new Error("no frames extracted");
+  const firstStem = path.basename(imageNames[0], `.${imageExtension}`);
+  if (!/^\d+$/.test(firstStem)) throw new Error(`unexpected frame name: ${imageNames[0]}`);
+  return { inputPattern: `%0${firstStem.length}d.${imageExtension}`, startNumber: Number(firstStem), frameTotal: imageNames.length };
+};
+
+/** Renders one session to every requested codec. */
+const renderSession = async ({ watchDir, manifest, partNames, codecs, shouldKeepFrames }) => {
+  const sessionName = manifest.session;
+  const imageExtension = manifest.format ?? "png";
+  const framesDir = path.join(watchDir, `${sessionName}-frames`);
+
+  console.log(`\n▶ ${sessionName}: extracting ${partNames.length} part(s)…`);
+  await extractFrames(watchDir, partNames, framesDir);
+  const { inputPattern, startNumber, frameTotal } = await detectFramePattern(framesDir, imageExtension);
+  console.log(`  ${frameTotal} frames @ ${manifest.framerate} fps (${manifest.width}×${manifest.height})`);
+
+  for (const codec of codecs) {
+    const { filenameSuffix, args } = CODEC_OUTPUTS[codec];
+    const outputPath = path.join(watchDir, `${sessionName}${filenameSuffix}`);
+    console.log(`  rendering ${path.basename(outputPath)}…`);
+    await runCommand("ffmpeg", [
+      "-y", "-hide_banner", "-loglevel", "error", "-stats",
+      "-framerate", String(manifest.framerate),
+      "-start_number", String(startNumber),
+      "-i", path.join(framesDir, inputPattern),
+      // safety net: H.264 / 4:2:0 needs even dimensions
+      "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2",
+      ...args,
+      outputPath,
+    ], { shouldInheritOutput: true });
+  }
+
+  if (!shouldKeepFrames) await fs.rm(framesDir, { recursive: true, force: true });
+  console.log(`✔ ${sessionName} done`);
+};
+
+/**
+ * Decides whether a session is ready: all expected frames present across its parts,
+ * or frames still missing but no new part has arrived within STALL_TIMEOUT_MS.
+ */
+const sessionProgress = new Map(); // sessionName → { lastFrameCount, lastChangeTime }
+
+const isSessionReady = async (watchDir, manifest, partNames) => {
+  const imageExtension = manifest.format ?? "png";
+  let frameCount = 0;
+  for (const partName of partNames) frameCount += await countImagesInZip(path.join(watchDir, partName), imageExtension);
+
+  const now = Date.now();
+  const progress = sessionProgress.get(manifest.session);
+  if (!progress || progress.lastFrameCount !== frameCount) {
+    sessionProgress.set(manifest.session, { lastFrameCount: frameCount, lastChangeTime: now });
+  }
+  if (frameCount >= manifest.frameCount) return true;
+
+  const isStalled = frameCount > 0 && now - sessionProgress.get(manifest.session).lastChangeTime > STALL_TIMEOUT_MS;
+  if (isStalled) console.warn(`⚠ ${manifest.session}: only ${frameCount}/${manifest.frameCount} frames arrived — rendering anyway`);
+  return isStalled;
+};
+
+/** One scan of the folder: renders every complete session that has no outputs yet. */
+const scanOnce = async ({ watchDir, codecs, shouldKeepFrames }, sessionsInProgress) => {
+  const fileNames = await fs.readdir(watchDir);
+  const manifestNames = fileNames.filter((fileName) => fileName.endsWith(MANIFEST_SUFFIX));
+
+  for (const manifestName of manifestNames) {
+    const sessionName = manifestName.slice(0, -MANIFEST_SUFFIX.length);
+    if (sessionsInProgress.has(sessionName)) continue;
+
+    // skip sessions already rendered for every requested codec
+    const outputPaths = codecs.map((codec) => path.join(watchDir, `${sessionName}${CODEC_OUTPUTS[codec].filenameSuffix}`));
+    const existing = await Promise.all(outputPaths.map(fileExists));
+    if (existing.every(Boolean)) continue;
+
+    try {
+      const manifest = JSON.parse(await fs.readFile(path.join(watchDir, manifestName), "utf8"));
+      const partNames = findSessionParts(fileNames, sessionName);
+      if (!partNames.length || !(await isSessionReady(watchDir, manifest, partNames))) continue;
+
+      sessionsInProgress.add(sessionName);
+      const missingCodecs = codecs.filter((_, index) => !existing[index]);
+      await renderSession({ watchDir, manifest, partNames, codecs: missingCodecs, shouldKeepFrames });
+    } catch (error) {
+      console.error(`✖ ${sessionName}: ${error.message}`);
+      sessionsInProgress.add(sessionName); // don't retry a broken session every poll
+    }
+  }
+};
+
+const main = async () => {
+  const options = parseArguments(process.argv.slice(2));
+  await runCommand("ffmpeg", ["-version"]).catch(() => {
+    throw new Error("ffmpeg not found on PATH");
+  });
+
+  const sessionsInProgress = new Set();
+  console.log(`Watching ${options.watchDir} for *${MANIFEST_SUFFIX} → ${options.codecs.join(" + ")}`);
+
+  if (options.isOnce) return scanOnce(options, sessionsInProgress);
+
+  // poll with setTimeout (not setInterval) so a long render never overlaps the next scan
+  let pollTimer = null;
+  const poll = async () => {
+    await scanOnce(options, sessionsInProgress).catch((error) => console.error(error.message));
+    pollTimer = setTimeout(poll, POLL_INTERVAL_MS);
+  };
+  const handleExit = () => {
+    clearTimeout(pollTimer);
+    process.exit(0);
+  };
+  process.on("SIGINT", handleExit);
+  process.on("SIGTERM", handleExit);
+  poll();
+};
+
+main().catch((error) => {
+  console.error(error.message);
+  process.exit(1);
+});
