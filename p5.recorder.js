@@ -16,7 +16,8 @@
  *
  * Export presets (RECORDER_EXPORT_PRESET): "instagram" = ≤1080 px wide, 30 fps, 16 Mbps;
  * "trueHD" = sketch resolution, capture fps, 40 Mbps. Both are Rec. 709 SDR; for the browser MP4 only the
- * container is relabelled (the H.264 stream keeps the browser's sRGB tag) — render-recordings.mjs fixes both.
+ * container is relabelled (the H.264 stream keeps whatever the browser's encoder wrote, sometimes sRGB) —
+ * render-recordings.mjs sets both.
  * Capture always runs at RECORDER_FRAMERATE; a lower output fps drops frames evenly, so motion speed is kept.
  *
  * Each recording is a "session" that downloads:
@@ -52,7 +53,7 @@ const RECORDER_WRITE_MANIFEST = true;       // download <session>.recording.json
 // in-browser H.264 MP4 alongside the frames (WebCodecs + mp4-muxer; ProRes needs the terminal script)
 const RECORDER_BROWSER_MP4 = true;
 const RECORDER_BROWSER_MP4_KEYFRAME_SECONDS = 2;  // keyframe interval (seeking granularity)
-// Rec. 709 SDR tag for the MP4 container (`colr` box); the browser still writes sRGB into the H.264 stream itself
+// Rec. 709 SDR tag for the MP4 container (`colr` box); the H.264 stream's own tag is the browser encoder's choice
 const RECORDER_BROWSER_MP4_COLOR_SPACE = { primaries: "bt709", transfer: "bt709", matrix: "bt709", fullRange: false };
 const RECORDER_MP4_MUXER_URL = "https://cdn.jsdelivr.net/npm/mp4-muxer@5.2.2/build/mp4-muxer.min.js";
 

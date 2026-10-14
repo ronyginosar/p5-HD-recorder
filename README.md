@@ -77,7 +77,7 @@ A choice made on the switch wins over the code's preset, so the switch always sh
 
 - Instagram re-encodes anything above 1080p / 30 fps, and a heavier upload just gets compressed harder, so the `instagram` preset matches its specs instead.
 - Both presets are Rec. 709 SDR: frames are converted with the BT.709 matrix and tagged accordingly, so colors don't shift on upload.
-- For uploads, use the helper's `<session>.mp4`: it's tagged Rec. 709 in both the file container and the H.264 stream. The browser's `-web.mp4` is relabelled Rec. 709 only in the container; browsers write an sRGB tag into the stream itself (`transfer_characteristics = 13`) that can't be changed from WebCodecs. The pixels are the same; only the label differs, and some tools (e.g. `ffprobe`) report the stream's value.
+- For uploads, use the helper's `<session>.mp4`: it's tagged Rec. 709 in both the file container and the H.264 stream. The browser's `-web.mp4` is always relabelled Rec. 709 in the container, but the label inside the stream is chosen by the browser's encoder, and WebCodecs can't set it. In testing, one browser wrote sRGB (`transfer_characteristics = 13`) and Cursor's built-in Chromium wrote Rec. 709. The pixels are the same; only the label differs, and some tools (e.g. `ffprobe`) report the stream's value.
 - Capture always runs at `RECORDER_FRAMERATE` (one frame per `draw()`). A lower output fps drops frames evenly, so the animation keeps its speed. The PNG zips always hold every captured frame.
 - The preset is written into the manifest, so the helper renders each recording with the preset it was made with. Recordings without one are treated as `trueHD`.
 - Edit `RECORDER_EXPORT_PRESETS` (and `EXPORT_PRESETS` in `render-recordings.mjs`) to change a preset's values.
