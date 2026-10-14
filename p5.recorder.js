@@ -9,7 +9,8 @@
  *   <script src="p5.recorder.js"></script>
  *   <script src="sketch.js"></script>
  *
- * Usage: click the floating Record / Stop button (it's DOM, so it never appears in the recording).
+ * Usage: pick Instagram / True HD on the floating switch, then click Record / Stop
+ * (both are DOM, so they never appear in the recording).
  * Optional per-sketch overrides from setup():
  *   Recorder.configure({ preset: "trueHD", durationSeconds: 8, exportPixelDensity: 2 });
  *
@@ -57,19 +58,49 @@ const RECORDER_MP4_MUXER_URL = "https://cdn.jsdelivr.net/npm/mp4-muxer@5.2.2/bui
 
 // toggle button
 const RECORDER_BUTTON_LABELS = { idle: "● Record", capturing: "■ Stop", encoding: "Encoding…" };
-const RECORDER_BUTTON_POSITION = { top: "1rem", right: "1rem" }; // any CSS inset values
+const RECORDER_BUTTON_POSITION = { top: "1rem", right: "1rem" }; // any CSS inset values (button + preset switch)
 const RECORDER_BUTTON_COLORS = { idle: "#222", capturing: "#d62828", text: "#fff" };
+
+// on-screen export preset switch, next to the Record button; locked while recording
+const RECORDER_SHOW_PRESET_SWITCH = true;
+const RECORDER_PRESET_LABELS = { instagram: "Instagram", trueHD: "True HD" }; // also sets the order
+// the switch's last choice is remembered in this browser and wins over the code's preset; null = don't remember
+const RECORDER_PRESET_STORAGE_KEY = "p5-recorder-preset";
 // ──────────────────────────────────────────────────────────────────────────────
 
 const Recorder = (() => {
   const IMAGE_SEQUENCE_FORMATS = ["png", "jpg", "webp"];
   const BUTTON_CLASS = "p5-recorder-toggle";
+  const CONTROLS_CLASS = "p5-recorder-controls";
+  const PRESET_SWITCH_CLASS = "p5-recorder-preset-switch";
+
+  /** Preset last picked on the on-screen switch, or null (switch hidden, storage off/unavailable, or stale value). */
+  const readSavedPreset = () => {
+    if (!RECORDER_SHOW_PRESET_SWITCH || !RECORDER_PRESET_STORAGE_KEY) return null;
+    try {
+      const savedPreset = localStorage.getItem(RECORDER_PRESET_STORAGE_KEY);
+      return RECORDER_EXPORT_PRESETS[savedPreset] ? savedPreset : null;
+    } catch {
+      return null; // storage blocked (e.g. some privacy modes)
+    }
+  };
+
+  const writeSavedPreset = (preset) => {
+    if (!RECORDER_PRESET_STORAGE_KEY) return;
+    try {
+      localStorage.setItem(RECORDER_PRESET_STORAGE_KEY, preset);
+    } catch {
+      // storage blocked: the choice still applies for this page view
+    }
+  };
+
+  let savedPreset = readSavedPreset();
   // H.264 High profile, highest level first; level 5.x is needed above ~1080p
   const AVC_CODEC_CANDIDATES = ["avc1.640034", "avc1.640033", "avc1.640032", "avc1.640028"];
 
   // Runtime settings; start from the constants above, overridable via Recorder.configure().
   const settings = {
-    preset: RECORDER_EXPORT_PRESET,
+    preset: savedPreset ?? RECORDER_EXPORT_PRESET,
     format: RECORDER_FORMAT,
     framerate: RECORDER_FRAMERATE,
     outputFramerate: null,       // null = from the preset
@@ -90,6 +121,8 @@ const Recorder = (() => {
   let wasCapturing = false;          // previous-frame state, to detect auto-stop by duration
   let isStarting = false;            // guards double-clicks while start() awaits encoder setup
   let toggleButton = null;
+  let presetSwitch = null;
+  let controlsElement = null; // fixed wrapper holding the preset switch + Record button
   let styleElement = null;
   const originalTitle = document.title;
 
@@ -113,8 +146,13 @@ const Recorder = (() => {
   const getState = () => getCapture()?.state ?? "idle";
   const isRecording = () => getState() === "capturing";
 
-  /** Merges per-sketch overrides into the runtime settings. */
-  const configure = (overrides = {}) => Object.assign(settings, overrides);
+  /** Merges per-sketch overrides into the runtime settings; a preset picked on the switch still wins. */
+  const configure = (overrides = {}) => {
+    Object.assign(settings, overrides);
+    if (savedPreset) settings.preset = savedPreset;
+    updatePresetSwitch();
+    return settings;
+  };
 
   // ─── Helpers ───────────────────────────────────────────────────────────────
 
@@ -312,9 +350,28 @@ const Recorder = (() => {
   const injectButtonStyles = () => {
     styleElement = document.createElement("style");
     styleElement.textContent = `
-      .${BUTTON_CLASS} {
+      .${CONTROLS_CLASS} {
         position: fixed; z-index: 9999;
         top: ${RECORDER_BUTTON_POSITION.top}; right: ${RECORDER_BUTTON_POSITION.right};
+        display: flex; align-items: center; gap: 0.5rem;
+      }
+      .${PRESET_SWITCH_CLASS} {
+        display: flex; padding: 0.25rem; gap: 0.25rem;
+        background: ${RECORDER_BUTTON_COLORS.idle}; border-radius: 999px; opacity: 0.85;
+      }
+      .${PRESET_SWITCH_CLASS}:hover, .${PRESET_SWITCH_CLASS}:focus-within { opacity: 1; }
+      .${PRESET_SWITCH_CLASS} button {
+        min-height: 36px; padding: 0 0.875rem;
+        font: 600 0.8125rem/1 system-ui, sans-serif; color: ${RECORDER_BUTTON_COLORS.text};
+        background: transparent; border: none; border-radius: 999px; cursor: pointer;
+        touch-action: manipulation;
+      }
+      .${PRESET_SWITCH_CLASS} button[aria-pressed="true"] {
+        color: ${RECORDER_BUTTON_COLORS.idle}; background: ${RECORDER_BUTTON_COLORS.text};
+      }
+      .${PRESET_SWITCH_CLASS} button:focus-visible { outline: 2px solid ${RECORDER_BUTTON_COLORS.capturing}; outline-offset: 1px; }
+      .${PRESET_SWITCH_CLASS} button:disabled { cursor: not-allowed; opacity: 0.6; }
+      .${BUTTON_CLASS} {
         min-width: 44px; min-height: 44px; padding: 0.5rem 1rem;
         font: 600 0.875rem/1 system-ui, sans-serif;
         color: ${RECORDER_BUTTON_COLORS.text}; background: ${RECORDER_BUTTON_COLORS.idle};
@@ -347,17 +404,74 @@ const Recorder = (() => {
     toggleButton.setAttribute("aria-pressed", String(state === "capturing"));
     toggleButton.setAttribute("aria-label", state === "capturing" ? "Stop recording" : "Start recording");
     toggleButton.disabled = state === "encoding";
+    updatePresetSwitch(); // lock / unlock with the recording state
   };
 
-  /** Creates the floating Record / Stop button. */
+  /** Short spec line for a preset, e.g. "≤1080 px wide · 30 fps · 16 Mbps" (used as the option's tooltip). */
+  const describePreset = ({ outputFramerate, browserMp4BitrateMbps, maxOutputWidth }) => [
+    maxOutputWidth ? `≤${maxOutputWidth} px wide` : "full resolution",
+    outputFramerate ? `${outputFramerate} fps` : "capture fps",
+    `${browserMp4BitrateMbps} Mbps`,
+  ].join(" · ");
+
+  /** Marks the active preset and locks the switch unless the recorder is idle. */
+  const updatePresetSwitch = () => {
+    if (!presetSwitch) return;
+    const isLocked = getButtonState() !== "idle"; // the preset is read when a recording starts
+    for (const option of presetSwitch.children) {
+      option.setAttribute("aria-pressed", String(option.dataset.preset === settings.preset));
+      option.disabled = isLocked;
+    }
+  };
+
+  /** Switch handler: applies + remembers the preset (ignored while recording). */
+  const selectPreset = (preset) => {
+    if (!RECORDER_EXPORT_PRESETS[preset] || getButtonState() !== "idle") return;
+    settings.preset = preset;
+    savedPreset = preset;
+    writeSavedPreset(preset);
+    updatePresetSwitch();
+    console.log(`p5.recorder: export preset "${preset}" (${describePreset(getPreset())})`);
+  };
+
+  const handlePresetClick = (event) => {
+    const option = event.target.closest("button[data-preset]");
+    if (option) selectPreset(option.dataset.preset);
+  };
+
+  /** Builds the Instagram | True HD switch: one native button per preset (keyboard + screen-reader friendly). */
+  const createPresetSwitch = () => {
+    presetSwitch = document.createElement("div");
+    presetSwitch.className = PRESET_SWITCH_CLASS;
+    presetSwitch.setAttribute("role", "group");
+    presetSwitch.setAttribute("aria-label", "Export preset");
+    for (const [preset, label] of Object.entries(RECORDER_PRESET_LABELS)) {
+      if (!RECORDER_EXPORT_PRESETS[preset]) continue;
+      const option = document.createElement("button");
+      option.type = "button";
+      option.textContent = label;
+      option.title = describePreset(RECORDER_EXPORT_PRESETS[preset]);
+      option.dataset.preset = preset;
+      presetSwitch.appendChild(option);
+    }
+    presetSwitch.addEventListener("click", handlePresetClick);
+    return presetSwitch;
+  };
+
+  /** Creates the floating controls: preset switch (optional) + Record / Stop button. */
   const createButton = () => {
     injectButtonStyles();
+    controlsElement = document.createElement("div");
+    controlsElement.className = CONTROLS_CLASS;
+    if (RECORDER_SHOW_PRESET_SWITCH) controlsElement.appendChild(createPresetSwitch());
     toggleButton = document.createElement("button");
     toggleButton.type = "button";
     toggleButton.className = BUTTON_CLASS;
     toggleButton.addEventListener("click", handleToggleClick);
-    document.body.appendChild(toggleButton);
+    controlsElement.appendChild(toggleButton);
+    document.body.appendChild(controlsElement);
     updateButton();
+    updatePresetSwitch();
   };
 
   // ─── Recording control ─────────────────────────────────────────────────────
@@ -439,12 +553,15 @@ const Recorder = (() => {
     updateButton();
   };
 
-  /** Removes the button, its styles and all listeners. */
+  /** Removes the controls, their styles and all listeners. */
   const destroy = () => {
     toggleButton?.removeEventListener("click", handleToggleClick);
-    toggleButton?.remove();
+    presetSwitch?.removeEventListener("click", handlePresetClick);
+    controlsElement?.remove();
     styleElement?.remove();
     toggleButton = null;
+    presetSwitch = null;
+    controlsElement = null;
     styleElement = null;
     window.removeEventListener("pagehide", destroy);
   };

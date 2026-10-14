@@ -1,6 +1,6 @@
 # p5-HD-recorder
 
-Frame-exact, high-resolution recording for [p5.js](https://p5js.org) sketches (global mode). Drop it in and a floating **● Record / ■ Stop** button appears, which saves:
+Frame-exact, high-resolution recording for [p5.js](https://p5js.org) sketches (global mode). Drop it in and a floating **Instagram | True HD** switch and **● Record / ■ Stop** button appear. Each recording saves:
 
 - **PNG frames** (zipped), always
 - **H.264 MP4**, made in the browser right away (`-web.mp4`)
@@ -54,17 +54,21 @@ Helper options: `--once` (render what's ready, then exit) · `--codecs h264` or 
 
 ## Export presets: Instagram or true HD
 
-One toggle at the top of `p5.recorder.js`. The default is `"trueHD"`:
+**On screen:** an **Instagram | True HD** switch sits next to the Record button. Hover an option to see its specs. It's locked while recording, and your last choice is remembered in this browser.
+
+**In code:** the default is `"trueHD"`, set at the top of `p5.recorder.js`:
 
 ```js
 const RECORDER_EXPORT_PRESET = "trueHD"; // or "instagram"
 ```
 
-Using the CDN copy? Switch per sketch from `setup()` instead, as `example/sketch.js` does:
+Using the CDN copy? Set it per sketch from `setup()` instead, as `example/sketch.js` does:
 
 ```js
 Recorder.configure({ preset: "instagram" });
 ```
+
+A choice made on the switch wins over the code's preset, so the switch always shows what will be recorded. To go back to the code's preset, clear it with `localStorage.removeItem("p5-recorder-preset")`. Hide the switch with `RECORDER_SHOW_PRESET_SWITCH = false`, or stop remembering the choice with `RECORDER_PRESET_STORAGE_KEY = null`.
 
 | Preset | Resolution | fps | Bitrate | Use for |
 | --- | --- | --- | --- | --- |
@@ -80,7 +84,7 @@ Recorder.configure({ preset: "instagram" });
 
 ## Settings
 
-Tuneable constants are at the top of `p5.recorder.js` (preset, fps, duration, export density, button look) and of `render-recordings.mjs` (preset values, CRF, ProRes profile, watched folder).
+Tuneable constants are at the top of `p5.recorder.js` (preset, preset switch, fps, duration, export density, button look) and of `render-recordings.mjs` (preset values, CRF, ProRes profile, watched folder).
 
 Per-sketch overrides, from `setup()`:
 
