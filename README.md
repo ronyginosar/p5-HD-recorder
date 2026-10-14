@@ -48,7 +48,7 @@ No changes to the sketch are needed. Set `pixelDensity()` once in `setup()`, nev
 | `recording-<date>-<time>.mp4` | helper (H.264, export preset's fps and bitrate) |
 | `recording-<date>-<time>-prores.mov` | helper (ProRes 422 HQ, export preset's fps) |
 
-All videos are Rec. 709 SDR. See [Export presets](#export-presets-instagram-or-true-hd).
+All videos are Rec. 709 SDR; the helper's `.mp4` is the fully tagged one to upload. See [Export presets](#export-presets-instagram-or-true-hd).
 
 Helper options: `--once` (render what's ready, then exit) · `--codecs h264` or `--codecs prores` · `--preset instagram` or `--preset trueHD` · `--dir <folder>` · `--keep-frames`.
 
@@ -73,6 +73,7 @@ Recorder.configure({ preset: "instagram" });
 
 - Instagram re-encodes anything above 1080p / 30 fps, and a heavier upload just gets compressed harder, so the `instagram` preset matches its specs instead.
 - Both presets are Rec. 709 SDR: frames are converted with the BT.709 matrix and tagged accordingly, so colors don't shift on upload.
+- For uploads, use the helper's `<session>.mp4`: it's tagged Rec. 709 in both the file container and the H.264 stream. The browser's `-web.mp4` is relabelled Rec. 709 only in the container; browsers write an sRGB tag into the stream itself (`transfer_characteristics = 13`) that can't be changed from WebCodecs. The pixels are the same; only the label differs, and some tools (e.g. `ffprobe`) report the stream's value.
 - Capture always runs at `RECORDER_FRAMERATE` (one frame per `draw()`). A lower output fps drops frames evenly, so the animation keeps its speed. The PNG zips always hold every captured frame.
 - The preset is written into the manifest, so the helper renders each recording with the preset it was made with. Recordings without one are treated as `trueHD`.
 - Edit `RECORDER_EXPORT_PRESETS` (and `EXPORT_PRESETS` in `render-recordings.mjs`) to change a preset's values.
