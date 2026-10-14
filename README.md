@@ -6,6 +6,8 @@ Frame-exact, high-resolution recording for [p5.js](https://p5js.org) sketches (g
 - **H.264 MP4**, made in the browser right away (`-web.mp4`)
 - **High-quality MP4 + ProRes 422 HQ `.mov`**, made by a terminal helper using your local ffmpeg
 
+Choose an export preset: **Instagram's best HD** (1080p, 30 fps, 15–20 Mbps, Rec. 709) or **true HD** (full resolution and fps). See [Export presets](#export-presets-instagram-or-true-hd).
+
 Recording is frame-exact: a slow or high-res sketch still plays back at the set fps, with no dropped frames. Built on [p5.capture](https://github.com/tapioca24/p5.capture), [mp4-muxer](https://github.com/Vanilagy/mp4-muxer) and [FFmpeg](https://ffmpeg.org); see [Credits](#credits).
 
 ## Quick start (no download)
@@ -46,16 +48,38 @@ No changes to the sketch are needed. Set `pixelDensity()` once in `setup()`, nev
 | `recording-<date>-<time>.mp4` | helper |
 | `recording-<date>-<time>-prores.mov` | helper |
 
-Helper options: `--once` (render what's ready, then exit) · `--codecs h264` or `--codecs prores` · `--dir <folder>` · `--keep-frames`.
+Helper options: `--once` (render what's ready, then exit) · `--codecs h264` or `--codecs prores` · `--preset instagram` or `--preset trueHD` · `--dir <folder>` · `--keep-frames`.
+
+## Export presets: Instagram or true HD
+
+One toggle at the top of `p5.recorder.js` (default `"trueHD"`):
+
+```js
+const RECORDER_EXPORT_PRESET = "instagram"; // or "trueHD"
+```
+
+Using the CDN copy? Switch per sketch from `setup()` instead: `Recorder.configure({ preset: "instagram" });`
+
+| Preset | Resolution | fps | Bitrate | Use for |
+| --- | --- | --- | --- | --- |
+| `instagram` | capped at 1080 px wide | 30 | browser MP4 16 Mbps · helper MP4 capped at 20 Mbps | Reels / Stories (1080×1920), feed (1080×1350) |
+| `trueHD` | the sketch's full resolution | capture fps (60) | browser MP4 40 Mbps · helper MP4 uncapped | archive, editing, other platforms |
+
+- Instagram re-encodes anything above 1080p / 30 fps, and a heavier upload just gets compressed harder, so the `instagram` preset matches its specs instead.
+- Both presets are Rec. 709 SDR: frames are converted with the BT.709 matrix and tagged accordingly, so colors don't shift on upload.
+- Capture always runs at `RECORDER_FRAMERATE` (one frame per `draw()`). A lower output fps drops frames evenly, so the animation keeps its speed. The PNG zips always hold every captured frame.
+- The preset is written into the manifest, so the helper renders each recording with the preset it was made with. Recordings without one are treated as `trueHD`.
+- Edit `RECORDER_EXPORT_PRESETS` (and `EXPORT_PRESETS` in `render-recordings.mjs`) to change a preset's values.
 
 ## Settings
 
-Tuneable constants are at the top of `p5.recorder.js` (fps, duration, export density, bitrate, button look) and of `render-recordings.mjs` (CRF, ProRes profile, watched folder).
+Tuneable constants are at the top of `p5.recorder.js` (preset, fps, duration, export density, button look) and of `render-recordings.mjs` (preset values, CRF, ProRes profile, watched folder).
 
 Per-sketch overrides, from `setup()`:
 
 ```js
-Recorder.configure({ durationSeconds: 8, exportPixelDensity: 2, framerate: 30 });
+Recorder.configure({ preset: "trueHD", durationSeconds: 8, exportPixelDensity: 2 });
+// fine-tune on top of the preset: outputFramerate, browserMp4BitrateMbps, maxOutputWidth
 ```
 
 Programmatic control: `Recorder.start()`, `Recorder.stop()`, `Recorder.toggle()`, `Recorder.isRecording()`, `Recorder.destroy()`.
