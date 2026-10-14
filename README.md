@@ -29,7 +29,7 @@ No changes to the sketch are needed. Set `pixelDensity()` once in `setup()`, nev
 | --- | --- | --- |
 | `p5.recorder.js` | your project, next to `index.html` (then use `<script src="p5.recorder.js">`) | the button + recording logic |
 | `render-recordings.mjs` | anywhere | turns the downloaded zips into MP4 + ProRes |
-| `example/` | n/a | minimal demo sketch |
+| `example/` | n/a | minimal demo sketch (seamless loop, auto-stop, export preset toggle) |
 
 ## Usage
 
@@ -42,23 +42,29 @@ No changes to the sketch are needed. Set `pixelDensity()` once in `setup()`, nev
 
 | File | From |
 | --- | --- |
-| `recording-<date>-<time>-part001.zip` … | browser |
-| `recording-<date>-<time>-web.mp4` | browser |
-| `recording-<date>-<time>.recording.json` | browser (tells the helper the recording is complete) |
-| `recording-<date>-<time>.mp4` | helper |
-| `recording-<date>-<time>-prores.mov` | helper |
+| `recording-<date>-<time>-part001.zip` … | browser (every captured frame) |
+| `recording-<date>-<time>-web.mp4` | browser (H.264, export preset's fps and bitrate) |
+| `recording-<date>-<time>.recording.json` | browser (tells the helper the recording is complete, and which preset to use) |
+| `recording-<date>-<time>.mp4` | helper (H.264, export preset's fps and bitrate) |
+| `recording-<date>-<time>-prores.mov` | helper (ProRes 422 HQ, export preset's fps) |
+
+All videos are Rec. 709 SDR. See [Export presets](#export-presets-instagram-or-true-hd).
 
 Helper options: `--once` (render what's ready, then exit) · `--codecs h264` or `--codecs prores` · `--preset instagram` or `--preset trueHD` · `--dir <folder>` · `--keep-frames`.
 
 ## Export presets: Instagram or true HD
 
-One toggle at the top of `p5.recorder.js` (default `"trueHD"`):
+One toggle at the top of `p5.recorder.js`. The default is `"trueHD"`:
 
 ```js
-const RECORDER_EXPORT_PRESET = "instagram"; // or "trueHD"
+const RECORDER_EXPORT_PRESET = "trueHD"; // or "instagram"
 ```
 
-Using the CDN copy? Switch per sketch from `setup()` instead: `Recorder.configure({ preset: "instagram" });`
+Using the CDN copy? Switch per sketch from `setup()` instead, as `example/sketch.js` does:
+
+```js
+Recorder.configure({ preset: "instagram" });
+```
 
 | Preset | Resolution | fps | Bitrate | Use for |
 | --- | --- | --- | --- | --- |
