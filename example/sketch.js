@@ -3,12 +3,16 @@
 const CANVAS_WIDTH = 540;
 const CANVAS_HEIGHT = 675;
 const LOOP_FRAMES = 120; // one full rotation every 2 s at 60 fps → seamless loop
+const CAPTURE_FRAMERATE = 60; // must match RECORDER_FRAMERATE in p5.recorder.js
+// "trueHD" (default: full resolution + fps) or "instagram" (≤1080 px wide, 30 fps, 15–20 Mbps); both Rec. 709.
+// The on-screen Instagram | True HD switch overrides this once clicked (remembered in this browser).
+const EXPORT_PRESET = "trueHD";
 
 function setup() {
   createCanvas(CANVAS_WIDTH, CANVAS_HEIGHT, WEBGL);
-  pixelDensity(2); // set once here, never in draw()
-  // optional per-sketch recorder settings: stop automatically after exactly one loop
-  Recorder.configure({ durationSeconds: LOOP_FRAMES / 60 });
+  pixelDensity(2); // set once here, never in draw() → 1080×1350 export
+  // optional per-sketch recorder settings: pick the export preset, stop automatically after exactly one loop
+  Recorder.configure({ preset: EXPORT_PRESET, durationSeconds: LOOP_FRAMES / CAPTURE_FRAMERATE });
 }
 
 function draw() {

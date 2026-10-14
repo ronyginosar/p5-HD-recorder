@@ -6,11 +6,13 @@
  * PNG zip parts have arrived, unzips the frames and renders them with the local ffmpeg into:
  *   <session>.mp4         H.264, yuv420p — small, plays everywhere / Instagram
  *   <session>-prores.mov  ProRes 422 HQ, 10-bit — for editing
+ * Both are Rec. 709 SDR. fps / bitrate cap follow the recording's export preset ("instagram" | "trueHD").
  * Outputs land next to the zips. Requires ffmpeg + unzip on PATH (both standard on macOS w/ ffmpeg installed).
  *
  * Usage:
  *   node render-recordings.mjs                     # watch ~/Downloads until Ctrl+C
  *   node render-recordings.mjs --once              # render whatever is complete now, then exit
+ *   node render-recordings.mjs --preset instagram  # force a preset instead of the manifest's
  *   node render-recordings.mjs --dir ~/Desktop/rec --codecs h264 --keep-frames
  */
 
@@ -26,35 +28,66 @@ const POLL_INTERVAL_MS = 2000;               // how often to rescan the folder
 const STALL_TIMEOUT_MS = 60000;              // render anyway if frames are missing and no new part arrived for this long
 const KEEP_EXTRACTED_FRAMES = false;         // keep <session>-frames/ after rendering
 const H264_CRF = 16;                         // lower = better quality / bigger file (18 ≈ visually lossless)
+// export presets — the manifest's preset (set in p5.recorder.js) is used unless --preset overrides it
+const DEFAULT_EXPORT_PRESET = "trueHD";      // for manifests written before presets existed
+const EXPORT_PRESETS = {
+  // Instagram: 30 fps, CRF peaks capped at 20 Mbps (its 1080p sweet spot is 15–20 Mbps)
+  instagram: { outputFramerate: 30, h264MaxBitrateMbps: 20 },
+  // full capture fps, uncapped CRF
+  trueHD: { outputFramerate: null, h264MaxBitrateMbps: null },
+};
 const H264_PRESET = "slow";                  // slower = smaller file at the same quality
 const PRORES_PROFILE = 3;                    // 0 proxy, 1 LT, 2 standard, 3 HQ, 4 4444
 const MANIFEST_SUFFIX = ".recording.json";
 // ──────────────────────────────────────────────────────────────────────────────
 
-/** ffmpeg output definitions; each gets the shared image-sequence input. */
+// Rec. 709 SDR, limited range: tags written into every output
+const REC709_TAG_ARGS = ["-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv"];
+
+/** ffmpeg output definitions; each gets the shared image-sequence input. buildArgs receives the export preset. */
 const CODEC_OUTPUTS = {
   h264: {
     filenameSuffix: ".mp4",
-    args: ["-c:v", "libx264", "-crf", String(H264_CRF), "-preset", H264_PRESET,
-      "-pix_fmt", "yuv420p", "-movflags", "+faststart"],
+    pixelFormat: "yuv420p",
+    buildArgs: ({ h264MaxBitrateMbps }) => [
+      "-c:v", "libx264", "-profile:v", "high", "-crf", String(H264_CRF), "-preset", H264_PRESET,
+      // capped CRF: quality-driven, but peaks never exceed the max bitrate
+      ...(h264MaxBitrateMbps ? ["-maxrate", `${h264MaxBitrateMbps}M`, "-bufsize", `${h264MaxBitrateMbps * 2}M`] : []),
+      "-movflags", "+faststart"],
   },
   prores: {
     filenameSuffix: "-prores.mov",
-    args: ["-c:v", "prores_ks", "-profile:v", String(PRORES_PROFILE),
-      "-pix_fmt", "yuv422p10le", "-vendor", "apl0"],
+    pixelFormat: "yuv422p10le",
+    buildArgs: () => ["-c:v", "prores_ks", "-profile:v", String(PRORES_PROFILE), "-vendor", "apl0"],
   },
 };
 
-/** Parses --dir, --codecs, --once, --keep-frames. */
+/**
+ * Filter chain: drop frames to the output fps, pad to even size, then convert RGB → YUV
+ * with the BT.709 matrix (ffmpeg's default for RGB input is BT.601, which shifts colors).
+ */
+const buildVideoFilter = (outputFramerate, pixelFormat) =>
+  [`fps=${outputFramerate}`, "pad=ceil(iw/2)*2:ceil(ih/2)*2",
+    "scale=out_color_matrix=bt709:out_range=tv", `format=${pixelFormat}`,
+    "setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv"].join(",");
+
+/** Parses --dir, --codecs, --preset, --once, --keep-frames. */
 const parseArguments = (argv) => {
-  const options = { watchDir: DEFAULT_WATCH_DIR, codecs: DEFAULT_CODECS, isOnce: false, shouldKeepFrames: KEEP_EXTRACTED_FRAMES };
+  const options = {
+    watchDir: DEFAULT_WATCH_DIR, codecs: DEFAULT_CODECS, presetOverride: null,
+    isOnce: false, shouldKeepFrames: KEEP_EXTRACTED_FRAMES,
+  };
   for (let index = 0; index < argv.length; index++) {
     const argument = argv[index];
     if (argument === "--once") options.isOnce = true;
     else if (argument === "--keep-frames") options.shouldKeepFrames = true;
     else if (argument === "--dir") options.watchDir = path.resolve(argv[++index].replace(/^~(?=$|\/)/, os.homedir()));
     else if (argument === "--codecs") options.codecs = argv[++index].split(",").map((codec) => codec.trim());
+    else if (argument === "--preset") options.presetOverride = argv[++index];
     else throw new Error(`unknown argument: ${argument}`);
+  }
+  if (options.presetOverride && !EXPORT_PRESETS[options.presetOverride]) {
+    throw new Error(`unknown preset: ${options.presetOverride} — use ${Object.keys(EXPORT_PRESETS).join(" or ")}`);
   }
   const unknownCodecs = options.codecs.filter((codec) => !CODEC_OUTPUTS[codec]);
   if (unknownCodecs.length) throw new Error(`unknown codec(s): ${unknownCodecs.join(", ")} — use h264,prores`);
@@ -116,8 +149,17 @@ const detectFramePattern = async (framesDir, imageExtension) => {
   return { inputPattern: `%0${firstStem.length}d.${imageExtension}`, startNumber: Number(firstStem), frameTotal: imageNames.length };
 };
 
+/** Picks the preset (--preset → manifest → default) and output fps (--preset → manifest → preset → capture fps). */
+const resolveExportSettings = (manifest, presetOverride) => {
+  const presetName = presetOverride ?? manifest.preset ?? DEFAULT_EXPORT_PRESET;
+  const preset = EXPORT_PRESETS[presetName] ?? EXPORT_PRESETS[DEFAULT_EXPORT_PRESET];
+  const requestedFramerate = presetOverride ? preset.outputFramerate : (manifest.outputFramerate ?? preset.outputFramerate);
+  const outputFramerate = Math.min(requestedFramerate ?? manifest.framerate, manifest.framerate);
+  return { presetName, preset, outputFramerate };
+};
+
 /** Renders one session to every requested codec. */
-const renderSession = async ({ watchDir, manifest, partNames, codecs, shouldKeepFrames }) => {
+const renderSession = async ({ watchDir, manifest, partNames, codecs, presetOverride, shouldKeepFrames }) => {
   const sessionName = manifest.session;
   const imageExtension = manifest.format ?? "png";
   const framesDir = path.join(watchDir, `${sessionName}-frames`);
@@ -125,10 +167,12 @@ const renderSession = async ({ watchDir, manifest, partNames, codecs, shouldKeep
   console.log(`\n▶ ${sessionName}: extracting ${partNames.length} part(s)…`);
   await extractFrames(watchDir, partNames, framesDir);
   const { inputPattern, startNumber, frameTotal } = await detectFramePattern(framesDir, imageExtension);
-  console.log(`  ${frameTotal} frames @ ${manifest.framerate} fps (${manifest.width}×${manifest.height})`);
+  const { presetName, preset, outputFramerate } = resolveExportSettings(manifest, presetOverride);
+  console.log(`  [${presetName}] ${frameTotal} frames @ ${manifest.framerate} fps → ${outputFramerate} fps ` +
+    `(${manifest.width}×${manifest.height})`);
 
   for (const codec of codecs) {
-    const { filenameSuffix, args } = CODEC_OUTPUTS[codec];
+    const { filenameSuffix, pixelFormat, buildArgs } = CODEC_OUTPUTS[codec];
     const outputPath = path.join(watchDir, `${sessionName}${filenameSuffix}`);
     console.log(`  rendering ${path.basename(outputPath)}…`);
     await runCommand("ffmpeg", [
@@ -136,9 +180,9 @@ const renderSession = async ({ watchDir, manifest, partNames, codecs, shouldKeep
       "-framerate", String(manifest.framerate),
       "-start_number", String(startNumber),
       "-i", path.join(framesDir, inputPattern),
-      // safety net: H.264 / 4:2:0 needs even dimensions
-      "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2",
-      ...args,
+      "-vf", buildVideoFilter(outputFramerate, pixelFormat),
+      ...buildArgs(preset),
+      ...REC709_TAG_ARGS,
       outputPath,
     ], { shouldInheritOutput: true });
   }
@@ -171,7 +215,7 @@ const isSessionReady = async (watchDir, manifest, partNames) => {
 };
 
 /** One scan of the folder: renders every complete session that has no outputs yet. */
-const scanOnce = async ({ watchDir, codecs, shouldKeepFrames }, sessionsInProgress) => {
+const scanOnce = async ({ watchDir, codecs, presetOverride, shouldKeepFrames }, sessionsInProgress) => {
   const fileNames = await fs.readdir(watchDir);
   const manifestNames = fileNames.filter((fileName) => fileName.endsWith(MANIFEST_SUFFIX));
 
@@ -191,7 +235,7 @@ const scanOnce = async ({ watchDir, codecs, shouldKeepFrames }, sessionsInProgre
 
       sessionsInProgress.add(sessionName);
       const missingCodecs = codecs.filter((_, index) => !existing[index]);
-      await renderSession({ watchDir, manifest, partNames, codecs: missingCodecs, shouldKeepFrames });
+      await renderSession({ watchDir, manifest, partNames, codecs: missingCodecs, presetOverride, shouldKeepFrames });
     } catch (error) {
       console.error(`✖ ${sessionName}: ${error.message}`);
       sessionsInProgress.add(sessionName); // don't retry a broken session every poll
