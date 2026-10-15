@@ -9,13 +9,14 @@
  *   <script src="p5.recorder.js"></script>
  *   <script src="sketch.js"></script>
  *
- * Usage: pick Instagram / True HD on the floating switch, then click Record / Stop
+ * Usage: pick Instagram / True HD / GIF on the floating switch, then click Record / Stop
  * (both are DOM, so they never appear in the recording).
  * Optional per-sketch overrides from setup():
  *   Recorder.configure({ preset: "trueHD", durationSeconds: 8, exportPixelDensity: 2 });
  *
  * Export presets (RECORDER_EXPORT_PRESET): "instagram" = ≤1080 px wide, 30 fps, 16 Mbps;
- * "trueHD" = sketch resolution, capture fps, 40 Mbps. Both are Rec. 709 SDR; for the browser MP4 only the
+ * "trueHD" = sketch resolution, capture fps, 40 Mbps; "gif" = looping <session>.gif (≤540 px wide, 20 fps)
+ * instead of the browser MP4, no frame zips. The MP4 presets are Rec. 709 SDR; for the browser MP4 only the
  * container is relabelled (the H.264 stream keeps whatever the browser's encoder wrote, sometimes sRGB) —
  * render-recordings.mjs sets both.
  * Capture always runs at RECORDER_FRAMERATE; a lower output fps drops frames evenly, so motion speed is kept.
@@ -23,18 +24,23 @@
  * Each recording is a "session" that downloads:
  *   <session>-part001.zip …        PNG frames (p5.capture), at full capture fps
  *   <session>-web.mp4              quick H.264 encoded in the browser (WebCodecs), if enabled + supported
+ *   <session>.gif                  "gif" preset only (replaces the zips, MP4 and manifest)
  *   <session>.recording.json       manifest — tells render-recordings.mjs the session is complete
  * Run `node render-recordings.mjs` in a terminal to turn the zips into <session>.mp4 + <session>-prores.mov.
  */
 
 // ─── Tuneable parameters ──────────────────────────────────────────────────────
-// Export toggle: "instagram" (Instagram's best HD) or "trueHD" (full fps / bitrate / resolution, for archive & editing).
+// Export toggle: "instagram" (Instagram's best HD), "trueHD" (full fps / bitrate / resolution, for archive & editing)
+// or "gif" (looping GIF for previews / web).
+// browserOutput: what's encoded in the browser ("mp4" | "gif"); shouldDownloadFrames: download the PNG zips + manifest
 const RECORDER_EXPORT_PRESET = "trueHD";
 const RECORDER_EXPORT_PRESETS = {
   // Instagram re-encodes anything above this, so match it: ≤1080 px wide, 30 fps, 15–20 Mbps
-  instagram: { outputFramerate: 30, browserMp4BitrateMbps: 16, maxOutputWidth: 1080 },
+  instagram: { outputFramerate: 30, browserMp4BitrateMbps: 16, maxOutputWidth: 1080, browserOutput: "mp4", shouldDownloadFrames: true },
   // null = keep the capture fps / the sketch's resolution
-  trueHD: { outputFramerate: null, browserMp4BitrateMbps: 40, maxOutputWidth: null },
+  trueHD: { outputFramerate: null, browserMp4BitrateMbps: 40, maxOutputWidth: null, browserOutput: "mp4", shouldDownloadFrames: true },
+  // 60 → 20 fps is an exact frame step and an exact GIF delay (5 cs); GIF frames are held in memory, so keep it small
+  gif: { outputFramerate: 20, browserMp4BitrateMbps: null, maxOutputWidth: 540, browserOutput: "gif", shouldDownloadFrames: false },
 };
 
 const RECORDER_FORMAT = "png";              // "png" | "jpg" | "webp" (zipped sequences) | "mp4" | "webm" | "gif"
@@ -57,6 +63,14 @@ const RECORDER_BROWSER_MP4_KEYFRAME_SECONDS = 2;  // keyframe interval (seeking 
 const RECORDER_BROWSER_MP4_COLOR_SPACE = { primaries: "bt709", transfer: "bt709", matrix: "bt709", fullRange: false };
 const RECORDER_MP4_MUXER_URL = "https://cdn.jsdelivr.net/npm/mp4-muxer@5.2.2/build/mp4-muxer.min.js";
 
+// in-browser GIF for the "gif" preset (gif.js — the encoder p5.capture uses internally; loaded on demand)
+const RECORDER_GIF_LIBRARY_URL = "https://cdn.jsdelivr.net/npm/gif.js@0.2.0/dist/gif.js";
+const RECORDER_GIF_WORKER_URL = "https://cdn.jsdelivr.net/npm/gif.js@0.2.0/dist/gif.worker.js";
+const RECORDER_GIF_QUALITY = 10;    // palette sampling: 1 = best colours (slowest) … 30 = fastest
+const RECORDER_GIF_DITHER = false;  // false | "FloydSteinberg" | "Atkinson" | "Stucki" — smoother gradients, bigger file
+const RECORDER_GIF_LOOP_COUNT = 0;  // 0 = loop forever, -1 = play once, N = repeat N times
+const RECORDER_GIF_WORKERS = 4;     // parallel encoding workers
+
 // toggle button
 const RECORDER_BUTTON_LABELS = { idle: "● Record", capturing: "■ Stop", encoding: "Encoding…" };
 const RECORDER_BUTTON_POSITION = { top: "1rem", right: "1rem" }; // any CSS inset values (button + preset switch)
@@ -64,7 +78,7 @@ const RECORDER_BUTTON_COLORS = { idle: "#222", capturing: "#d62828", text: "#fff
 
 // on-screen export preset switch, next to the Record button; locked while recording
 const RECORDER_SHOW_PRESET_SWITCH = true;
-const RECORDER_PRESET_LABELS = { instagram: "Instagram", trueHD: "True HD" }; // also sets the order
+const RECORDER_PRESET_LABELS = { instagram: "Instagram", trueHD: "True HD", gif: "GIF" }; // also sets the order
 // the switch's last choice is remembered in this browser and wins over the code's preset; null = don't remember
 const RECORDER_PRESET_STORAGE_KEY = "p5-recorder-preset";
 // ──────────────────────────────────────────────────────────────────────────────
@@ -211,9 +225,30 @@ const Recorder = (() => {
 
   const getBrowserMp4BitrateMbps = () => settings.browserMp4BitrateMbps ?? getPreset().browserMp4BitrateMbps;
   const getMaxOutputWidth = () => settings.maxOutputWidth ?? getPreset().maxOutputWidth;
+  const getBrowserOutput = () => getPreset().browserOutput ?? "mp4";
+  const isFrameDownloadEnabled = () => getPreset().shouldDownloadFrames ?? true;
 
   /** Keep 1 of every N captured frames, e.g. 60 → 30 fps keeps every 2nd frame. */
   const getFrameStep = () => Math.max(1, Math.round(settings.framerate / getOutputFramerate()));
+
+  /** Sets up the preset's in-browser encoder ("mp4" | "gif"); null if disabled / unsupported. */
+  const createBrowserEncoder = (width, height) =>
+    getBrowserOutput() === "gif" ? createGifEncoder(width, height) : createMp4Encoder(width, height);
+
+  /** Feeds the current canvas to the browser encoder, dropping frames evenly to reach the output fps. */
+  const encodeBrowserFrame = (browserEncoder) => {
+    const isSkippedFrame = browserEncoder.sourceFrameIndex++ % getFrameStep() !== 0;
+    if (isSkippedFrame) return;
+    if (browserEncoder.kind === "gif") addGifFrame(browserEncoder);
+    else encodeMp4Frame(browserEncoder);
+    browserEncoder.frameIndex++;
+  };
+
+  /** Finalises the browser encoder's file and downloads it. */
+  const finishBrowserEncoder = (browserEncoder, sessionName) =>
+    browserEncoder.kind === "gif"
+      ? finishGifEncoder(browserEncoder, sessionName)
+      : finishMp4Encoder(browserEncoder, sessionName);
 
   // ─── In-browser H.264 (WebCodecs → mp4-muxer) ──────────────────────────────
 
@@ -236,7 +271,7 @@ const Recorder = (() => {
   };
 
   /** Sets up an encoder + muxer pair; returns null (with a console note) if unavailable. */
-  const createBrowserEncoder = async (width, height) => {
+  const createMp4Encoder = async (width, height) => {
     if (!settings.shouldEncodeBrowserMp4) return null;
     if (!isWebCodecsAvailable()) {
       console.warn("p5.recorder: WebCodecs not available — skipping browser MP4 (use render-recordings.mjs)");
@@ -261,7 +296,7 @@ const Recorder = (() => {
         error: (error) => console.error("p5.recorder: browser MP4 encoder error", error),
       });
       encoder.configure(encoderConfig);
-      return { encoder, muxer, muxerTarget, sourceFrameIndex: 0, frameIndex: 0, width, height };
+      return { kind: "mp4", encoder, muxer, muxerTarget, sourceFrameIndex: 0, frameIndex: 0, width, height };
     } catch (error) {
       console.warn("p5.recorder: browser MP4 disabled —", error.message);
       return null;
@@ -275,11 +310,7 @@ const Recorder = (() => {
   };
 
   /** Encodes the current canvas as the next video frame (timestamps are frame-exact, not wall-clock). */
-  const encodeBrowserFrame = (browserEncoder) => {
-    // drop frames evenly to reach the output fps without slowing the motion down
-    const isSkippedFrame = browserEncoder.sourceFrameIndex++ % getFrameStep() !== 0;
-    if (isSkippedFrame) return;
-
+  const encodeMp4Frame = (browserEncoder) => {
     const outputFramerate = getOutputFramerate();
     const frameDurationMicros = 1e6 / outputFramerate;
     const keyframeInterval = Math.max(1, Math.round(outputFramerate * RECORDER_BROWSER_MP4_KEYFRAME_SECONDS));
@@ -291,11 +322,10 @@ const Recorder = (() => {
     });
     browserEncoder.encoder.encode(frame, { keyFrame: browserEncoder.frameIndex % keyframeInterval === 0 });
     frame.close();
-    browserEncoder.frameIndex++;
   };
 
   /** Flushes the encoder, finalises the MP4 and downloads it. */
-  const finishBrowserEncoder = async (browserEncoder, sessionName) => {
+  const finishMp4Encoder = async (browserEncoder, sessionName) => {
     try {
       await browserEncoder.encoder.flush();
       browserEncoder.muxer.finalize();
@@ -308,6 +338,57 @@ const Recorder = (() => {
       if (browserEncoder.encoder.state !== "closed") browserEncoder.encoder.close();
     }
   };
+
+  // ─── In-browser GIF (gif.js) ───────────────────────────────────────────────
+
+  /** Sets up a gif.js encoder; its worker runs from a blob URL because CDN workers are cross-origin. */
+  const createGifEncoder = async (width, height) => {
+    try {
+      await loadScriptOnce(RECORDER_GIF_LIBRARY_URL);
+      const workerUrl = URL.createObjectURL(
+        new Blob([`importScripts("${RECORDER_GIF_WORKER_URL}")`], { type: "text/javascript" }));
+      const gif = new GIF({
+        width,
+        height,
+        quality: RECORDER_GIF_QUALITY,
+        dither: RECORDER_GIF_DITHER,
+        repeat: RECORDER_GIF_LOOP_COUNT,
+        workers: RECORDER_GIF_WORKERS,
+        workerScript: workerUrl,
+      });
+      return { kind: "gif", gif, workerUrl, sourceFrameIndex: 0, frameIndex: 0, width, height };
+    } catch (error) {
+      console.warn("p5.recorder: GIF disabled —", error.message);
+      return null;
+    }
+  };
+
+  /** Copies the current canvas into the GIF (cropped to the even output size). */
+  const addGifFrame = (gifEncoder) => {
+    // GIF delays are whole centiseconds: carry the rounding error so the total length stays exact (30 fps → 3,3,4 cs…)
+    const centisecondsPerFrame = 100 / (settings.framerate / getFrameStep());
+    const frameIndex = gifEncoder.frameIndex;
+    const delayCentiseconds = Math.round((frameIndex + 1) * centisecondsPerFrame) - Math.round(frameIndex * centisecondsPerFrame);
+    gifEncoder.gif.addFrame(p5.instance.canvas, { delay: delayCentiseconds * 10, copy: true });
+  };
+
+  /** Renders the GIF in the workers, downloads it and frees the workers. */
+  const finishGifEncoder = (gifEncoder, sessionName) => new Promise((resolve) => {
+    const { gif, workerUrl } = gifEncoder;
+    const cleanUp = () => {
+      gif.freeWorkers.forEach((worker) => worker.terminate()); // gif.js keeps idle workers alive otherwise
+      URL.revokeObjectURL(workerUrl);
+      resolve();
+    };
+    if (gifEncoder.frameIndex === 0) return cleanUp();
+
+    gif.on("finished", (blob) => {
+      downloadBlob(blob, `${sessionName}.gif`);
+      console.log(`p5.recorder: GIF ready (${(blob.size / 1e6).toFixed(1)} MB, ${gifEncoder.frameIndex} frames)`);
+      cleanUp();
+    });
+    gif.render();
+  });
 
   // ─── p5.capture options + manifest ─────────────────────────────────────────
 
@@ -325,12 +406,14 @@ const Recorder = (() => {
       autoSaveDuration: isImageSequence ? settings.autoSaveEveryFrames : null,
       // one name per zip part; frame filenames inside are numbered continuously across parts
       baseFilename: () => `${session.name}-part${padNumber(++session.partCount, 3)}`,
+      // not calling p5.capture's download callback discards the part (zips still auto-save, so memory stays capped)
+      beforeDownload: isFrameDownloadEnabled() ? undefined : () => {},
     };
   };
 
   /** Downloads the manifest render-recordings.mjs waits for before rendering. */
   const writeManifest = (finishedSession) => {
-    if (!settings.shouldWriteManifest || !IMAGE_SEQUENCE_FORMATS.includes(settings.format)) return;
+    if (!settings.shouldWriteManifest || !isFrameDownloadEnabled() || !IMAGE_SEQUENCE_FORMATS.includes(settings.format)) return;
     const manifest = {
       session: finishedSession.name,
       preset: settings.preset,
@@ -409,10 +492,10 @@ const Recorder = (() => {
   };
 
   /** Short spec line for a preset, e.g. "≤1080 px wide · 30 fps · 16 Mbps" (used as the option's tooltip). */
-  const describePreset = ({ outputFramerate, browserMp4BitrateMbps, maxOutputWidth }) => [
+  const describePreset = ({ outputFramerate, browserMp4BitrateMbps, maxOutputWidth, browserOutput }) => [
     maxOutputWidth ? `≤${maxOutputWidth} px wide` : "full resolution",
     outputFramerate ? `${outputFramerate} fps` : "capture fps",
-    `${browserMp4BitrateMbps} Mbps`,
+    browserOutput === "gif" ? "looping GIF" : `${browserMp4BitrateMbps} Mbps`,
   ].join(" · ");
 
   /** Marks the active preset and locks the switch unless the recorder is idle. */
@@ -509,7 +592,7 @@ const Recorder = (() => {
     isStarting = false;
     console.log(`p5.recorder: recording "${session.name}" [${settings.preset}] at ${width}×${height} ${settings.format}, ` +
       `${settings.framerate} → ${getOutputFramerate()} fps` +
-      (browserEncoder ? " + browser MP4" : ""));
+      (browserEncoder ? ` + browser ${browserEncoder.kind.toUpperCase()}` : ""));
   };
 
   const stop = () => {

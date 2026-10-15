@@ -1,12 +1,12 @@
 # p5-HD-recorder
 
-Frame-exact, high-resolution recording for [p5.js](https://p5js.org) sketches (global mode). Drop it in and a floating **Instagram | True HD** switch and **● Record / ■ Stop** button appear. Each recording saves:
+Frame-exact, high-resolution recording for [p5.js](https://p5js.org) sketches (global mode). Drop it in and a floating **Instagram | True HD | GIF** switch and **● Record / ■ Stop** button appear. Each recording saves:
 
 - **PNG frames** (zipped), always
 - **H.264 MP4**, made in the browser right away (`-web.mp4`)
 - **High-quality MP4 + ProRes 422 HQ `.mov`**, made by a terminal helper using your local ffmpeg
 
-Choose an export preset: **Instagram's best HD** (1080p, 30 fps, 15–20 Mbps, Rec. 709) or **true HD** (full resolution and fps). See [Export presets](#export-presets-instagram-or-true-hd).
+Choose an export preset: **Instagram's best HD** (1080p, 30 fps, 15–20 Mbps, Rec. 709), **true HD** (full resolution and fps) or **GIF** (a small looping `.gif` instead of the files above). See [Export presets](#export-presets-instagram-true-hd-or-gif).
 
 Recording is frame-exact: a slow or high-res sketch still plays back at the set fps, with no dropped frames. Built on [p5.capture](https://github.com/tapioca24/p5.capture), [mp4-muxer](https://github.com/Vanilagy/mp4-muxer) and [FFmpeg](https://ffmpeg.org); see [Credits](#credits).
 
@@ -48,18 +48,20 @@ No changes to the sketch are needed. Set `pixelDensity()` once in `setup()`, nev
 | `recording-<date>-<time>.mp4` | helper (H.264, export preset's fps and bitrate) |
 | `recording-<date>-<time>-prores.mov` | helper (ProRes 422 HQ, export preset's fps) |
 
-All videos are Rec. 709 SDR; the helper's `.mp4` is the fully tagged one to upload. See [Export presets](#export-presets-instagram-or-true-hd).
+All videos are Rec. 709 SDR; the helper's `.mp4` is the fully tagged one to upload. See [Export presets](#export-presets-instagram-true-hd-or-gif).
+
+With the **GIF** preset you get only `recording-<date>-<time>.gif`, made in the browser; the helper isn't needed.
 
 Helper options: `--once` (render what's ready, then exit) · `--codecs h264` or `--codecs prores` · `--preset instagram` or `--preset trueHD` · `--dir <folder>` · `--keep-frames`.
 
-## Export presets: Instagram or true HD
+## Export presets: Instagram, true HD or GIF
 
-**On screen:** an **Instagram | True HD** switch sits next to the Record button. Hover an option to see its specs. It's locked while recording, and your last choice is remembered in this browser.
+**On screen:** an **Instagram | True HD | GIF** switch sits next to the Record button. Hover an option to see its specs. It's locked while recording, and your last choice is remembered in this browser.
 
 **In code:** the default is `"trueHD"`, set at the top of `p5.recorder.js`:
 
 ```js
-const RECORDER_EXPORT_PRESET = "trueHD"; // or "instagram"
+const RECORDER_EXPORT_PRESET = "trueHD"; // or "instagram" | "gif"
 ```
 
 Using the CDN copy? Set it per sketch from `setup()` instead, as `example/sketch.js` does:
@@ -74,11 +76,14 @@ A choice made on the switch wins over the code's preset, so the switch always sh
 | --- | --- | --- | --- | --- |
 | `instagram` | capped at 1080 px wide | 30 | browser MP4 16 Mbps · helper MP4 capped at 20 Mbps | Reels / Stories (1080×1920), feed (1080×1350) |
 | `trueHD` | the sketch's full resolution | capture fps (60) | browser MP4 40 Mbps · helper MP4 uncapped | archive, editing, other platforms |
+| `gif` | capped at 540 px wide | 20 | n/a (256-colour GIF, loops forever) | previews, READMEs, chat, web |
 
 - Instagram re-encodes anything above 1080p / 30 fps, and a heavier upload just gets compressed harder, so the `instagram` preset matches its specs instead.
-- Both presets are Rec. 709 SDR: frames are converted with the BT.709 matrix and tagged accordingly, so colors don't shift on upload.
+- The `gif` preset encodes in the browser with [gif.js](https://github.com/jnordberg/gif.js) (loaded on demand) instead of p5.capture's GIF format. p5.capture adds every `draw()` as a GIF frame, so a 60 fps capture would play back slower and be huge. Here frames are dropped evenly (60 → 20 fps keeps every 3rd), and each frame's delay is rounded to whole centiseconds with the error carried over, so the GIF keeps the sketch's speed. No PNG zips or manifest are downloaded; set `shouldDownloadFrames: true` on the preset to keep them. GIF frames are held in memory until you stop, so keep GIF takes short. Palette quality, dithering and loop count are the `RECORDER_GIF_*` constants.
+- The video presets are Rec. 709 SDR: frames are converted with the BT.709 matrix and tagged accordingly, so colors don't shift on upload.
 - For uploads, use the helper's `<session>.mp4`: it's tagged Rec. 709 in both the file container and the H.264 stream. The browser's `-web.mp4` is always relabelled Rec. 709 in the container, but the label inside the stream is chosen by the browser's encoder, and WebCodecs can't set it. In testing, one browser wrote sRGB (`transfer_characteristics = 13`) and Cursor's built-in Chromium wrote Rec. 709. The pixels are the same; only the label differs, and some tools (e.g. `ffprobe`) report the stream's value.
 - Capture always runs at `RECORDER_FRAMERATE` (one frame per `draw()`). A lower output fps drops frames evenly, so the animation keeps its speed. The PNG zips always hold every captured frame.
+- The preset switch lists every preset in `RECORDER_PRESET_LABELS`, in that order.
 - The preset is written into the manifest, so the helper renders each recording with the preset it was made with. Recordings without one are treated as `trueHD`.
 - Edit `RECORDER_EXPORT_PRESETS` (and `EXPORT_PRESETS` in `render-recordings.mjs`) to change a preset's values.
 
@@ -90,7 +95,7 @@ Per-sketch overrides, from `setup()`:
 
 ```js
 Recorder.configure({ preset: "trueHD", durationSeconds: 8, exportPixelDensity: 2 });
-// fine-tune on top of the preset: outputFramerate, browserMp4BitrateMbps, maxOutputWidth
+// fine-tune on top of the preset: outputFramerate, browserMp4BitrateMbps, maxOutputWidth (also apply to "gif")
 ```
 
 Programmatic control: `Recorder.start()`, `Recorder.stop()`, `Recorder.toggle()`, `Recorder.isRecording()`, `Recorder.destroy()`.
@@ -111,12 +116,13 @@ This project is a thin layer on top of excellent open-source work:
 | [p5.js](https://p5js.org) ([GitHub](https://github.com/processing/p5.js)) | Processing Foundation & contributors | the sketch runtime | LGPL-2.1 |
 | [p5.capture](https://github.com/tapioca24/p5.capture) | [tapioca24](https://github.com/tapioca24) | frame-exact capture of the p5 canvas, PNG/JPG/WebP zips | MIT |
 | [mp4-muxer](https://github.com/Vanilagy/mp4-muxer) | [Vanilagy](https://github.com/Vanilagy) | packaging browser-encoded H.264 into an MP4 file | MIT |
+| [gif.js](https://github.com/jnordberg/gif.js) | [Johan Nordberg](https://github.com/jnordberg) | encoding the `gif` preset in web workers | MIT |
 | [WebCodecs API](https://developer.mozilla.org/docs/Web/API/WebCodecs_API) | W3C / browser vendors | hardware H.264 encoding in the browser | web standard |
 | [FFmpeg](https://ffmpeg.org) with [x264](https://www.videolan.org/developers/x264.html) | FFmpeg & VideoLAN developers | final H.264 and ProRes renders (helper script) | LGPL / GPL |
 | [Node.js](https://nodejs.org) | OpenJS Foundation | running the helper script | MIT |
 | [jsDelivr](https://www.jsdelivr.com) | jsDelivr | serving the scripts from a CDN | free public CDN |
 
-p5.capture itself builds on [webm-writer-js](https://github.com/thenickdude/webm-writer-js), [gif.js](https://github.com/jnordberg/gif.js) and [h264-mp4-encoder](https://github.com/TrevorSundberg/h264-mp4-encoder) for its other export formats.
+p5.capture itself builds on [webm-writer-js](https://github.com/thenickdude/webm-writer-js), gif.js and [h264-mp4-encoder](https://github.com/TrevorSundberg/h264-mp4-encoder) for its other export formats.
 
 None of these are bundled here; they're loaded from their CDNs or installed on your machine, under their own licenses.
 

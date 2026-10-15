@@ -4,8 +4,9 @@ const CANVAS_WIDTH = 540;
 const CANVAS_HEIGHT = 675;
 const LOOP_FRAMES = 120; // one full rotation every 2 s at 60 fps → seamless loop
 const CAPTURE_FRAMERATE = 60; // must match RECORDER_FRAMERATE in p5.recorder.js
-// "trueHD" (default: full resolution + fps) or "instagram" (≤1080 px wide, 30 fps, 15–20 Mbps); both Rec. 709.
-// The on-screen Instagram | True HD switch overrides this once clicked (remembered in this browser).
+// "trueHD" (default: full resolution + fps), "instagram" (≤1080 px wide, 30 fps, 15–20 Mbps; both Rec. 709)
+// or "gif" (≤540 px wide, 20 fps looping GIF).
+// The on-screen Instagram | True HD | GIF switch overrides this once clicked (remembered in this browser).
 const EXPORT_PRESET = "trueHD";
 
 function setup() {
